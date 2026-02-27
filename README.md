@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-# wxdashboard
-=======
 # Weather Dashboard
 
 A professional, real-time weather dashboard that pulls data from multiple Weather Underground stations, stores it in a SQLite database, and displays it on a modern, dark-mode dashboard.
@@ -62,4 +59,3 @@ A professional, real-time weather dashboard that pulls data from multiple Weathe
 - **Frontend**: Vanilla HTML5, CSS3, and JavaScript
 - **Charting**: Chart.js
 - **Icons**: Emoji & Dynamic CSS
->>>>>>> 3f34a3f (Initial commit: Weather Dashboard with multi-station support)
