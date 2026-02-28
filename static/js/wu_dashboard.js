@@ -14,9 +14,13 @@ let customEnd = null;
 let refreshMs = 30000;
 let useCelsius = false;
 let refreshTimer = null;
+let stationMap = null;
+let mapMarker = null;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+let currentUser = null;
+let stationList = [];
 const fmt = (v, dec = 1, fb = "—") => v == null ? fb : Number(v).toFixed(dec);
 const toC = f => f == null ? null : (f - 32) * 5 / 9;
 const tempStr = f => {
@@ -63,6 +67,49 @@ const weatherIcon = (temp, uv, rain, obsTime) => {
     if (uv > 2) return "🌤️";
     if (temp < 32) return "❄️";
     return "⛅";
+};
+
+const updateDynamicTheme = (d) => {
+    document.body.classList.remove('theme-sunny', 'theme-rainy', 'theme-stormy', 'theme-cold', 'theme-hot');
+
+    if (d.precip_rate_in_hr > 0.1 || d.precip_total_in > 0.5) {
+        document.body.classList.add('theme-rainy');
+    } else if (d.temp_f > 90) {
+        document.body.classList.add('theme-hot');
+    } else if (d.temp_f < 32) {
+        document.body.classList.add('theme-cold');
+    } else if (d.uv_index > 8) {
+        document.body.classList.add('theme-sunny');
+    } else {
+        document.body.classList.add('theme-sunny'); // default
+    }
+};
+
+const initStationMap = (lat, lon, name) => {
+    if (!lat || !lon) return;
+    const mapDiv = document.getElementById('station-map');
+    if (!mapDiv) return;
+
+    if (typeof L === 'undefined') {
+        mapDiv.innerHTML = '<div style="padding:1rem; color:var(--text-muted); text-align:center;">Map library not loaded.</div>';
+        return;
+    }
+
+    try {
+        if (!stationMap) {
+            stationMap = L.map('station-map').setView([lat, lon], 13);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(stationMap);
+            mapMarker = L.marker([lat, lon]).addTo(stationMap);
+        } else {
+            stationMap.setView([lat, lon], 13);
+            mapMarker.setLatLng([lat, lon]);
+        }
+        mapMarker.bindPopup(`<b>${name || currentStation}</b>`).openPopup();
+    } catch (e) {
+        mapDiv.innerHTML = '<div style="padding:1rem; color:var(--text-muted)">Map Error</div>';
+    }
 };
 
 const baroTrend = rows => {
@@ -204,6 +251,10 @@ function initSettings() {
         close.addEventListener("click", () => panel.style.display = "none");
     }
 
+    // Auth & Station Management
+    initAuth();
+    initStationManagement();
+
     // Card toggles
     document.querySelectorAll("#card-toggles input").forEach(cb => {
         cb.addEventListener("change", () => {
@@ -271,9 +322,22 @@ function updateHero(d) {
     setText("humidity-val", d.humidity_pct != null ? Math.round(d.humidity_pct) + "%" : "—");
 
     const luEl = $("last-update-time");
-    if (luEl && d.obs_time_utc) {
+    const hluEl = $("hero-last-update");
+    if (d.obs_time_utc) {
         const dt = new Date(d.obs_time_utc);
-        luEl.textContent = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        const timeStr = dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        if (luEl) luEl.textContent = timeStr;
+        if (hluEl) hluEl.textContent = timeStr;
+    }
+
+    // Station Info Refinement
+    const sid = d.station_id || currentStation;
+    const station = stationList.find(s => s.id === sid);
+    if (station) {
+        setText("header-station-name", station.name);
+        setText("header-station-id", `(${sid})`);
+        setText("hero-station-id", sid);
+        setText("hero-station-loc", d.neighborhood || "—");
     }
 
     const noData = $("no-data-state");
@@ -360,8 +424,15 @@ function updateMetrics(d, histRows) {
     setText("wind-chill-val", d.wind_chill_f != null ? tempStr(d.wind_chill_f) : "—");
 
     // Station
+    const station = stationList.find(s => s.id === currentStation);
+    const coordsStr = station ? `${station.latitude.toFixed(4)}, ${station.longitude.toFixed(4)}` : "—";
     setText("station-id-display", d.station_id || currentStation);
     setText("station-readings", histRows ? histRows.length + " pts" : "—");
+    setText("station-coords", coordsStr);
+
+    if (station) {
+        initStationMap(station.latitude, station.longitude, station.name);
+    }
 }
 
 // ── Alerts ────────────────────────────────────────────────────────────────────
@@ -420,9 +491,89 @@ function buildChart(id, config) {
     const ctx = $(id);
     if (!ctx) return null;
     if (charts[id]) charts[id].destroy();
+
+    // Inject Zoom Configuration
+    if (!config.options.plugins) config.options.plugins = {};
+    config.options.plugins.zoom = {
+        pan: {
+            enabled: true,
+            mode: 'x',
+            onPanComplete: syncChartsFromControl
+        },
+        zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            mode: 'x',
+            onZoomComplete: syncChartsFromControl
+        }
+    };
+
     charts[id] = new Chart(ctx, config);
     return charts[id];
 }
+
+function syncChartsFromControl({ chart }) {
+    if (!chart) return;
+    const { min, max } = chart.scales.x;
+
+    // Update Slider UI context
+    const slider = $("charts-timeline-slider");
+    if (slider) {
+        const total = chart.data.labels.length;
+        // This is a simplified mapping, real slider-to-zoom sync is handled in its listener
+    }
+
+    // Sync other charts
+    Object.values(charts).forEach(c => {
+        if (c !== chart) {
+            c.options.scales.x.min = min;
+            c.options.scales.x.max = max;
+            c.update('none');
+        }
+    });
+
+    const viewEl = $("slider-current-view");
+    if (viewEl) {
+        const start = new Date(min).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const end = new Date(max).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        viewEl.textContent = `${start} — ${end}`;
+    }
+}
+
+// ── Timeline Slider Logic ────────────────────────────────────────────────────────
+function initTimelineSlider() {
+    const slider = $("charts-timeline-slider");
+    const resetBtn = $("reset-charts-zoom");
+    if (!slider) return;
+
+    slider.oninput = function () {
+        const pct = parseInt(this.value);
+        Object.values(charts).forEach(c => {
+            const labels = c.data.labels;
+            if (!labels || labels.length < 2) return;
+
+            const total = labels.length;
+            const windowSize = Math.max(Math.floor(total * 0.2), 5); // 20% window
+            const centerIdx = Math.floor((pct / 100) * (total - 1));
+
+            const startIdx = Math.max(0, centerIdx - Math.floor(windowSize / 2));
+            const endIdx = Math.min(total - 1, startIdx + windowSize);
+
+            c.options.scales.x.min = labels[startIdx];
+            c.options.scales.x.max = labels[endIdx];
+            c.update('none');
+        });
+        $("slider-current-view").textContent = `Scanning Time... (${pct}%)`;
+    };
+
+    resetBtn?.addEventListener("click", () => {
+        Object.values(charts).forEach(c => c.resetZoom());
+        slider.value = 100;
+        $("slider-current-view").textContent = "Full Range";
+    });
+}
+// Call init in a wrapper or at end
+setTimeout(initTimelineSlider, 1000);
 
 const lineDs = (label, data, color, filled = false) => ({
     label, data, borderColor: color,
@@ -436,7 +587,10 @@ const barDs = (label, data, color) => ({
 const xAxis = () => ({ type: "time", time: { tooltipFormat: "MMM d, h:mm a", displayFormats: { hour: "h a", minute: "h:mm a" } }, grid: { color: "#1e3050" }, ticks: { maxTicksLimit: 6 } });
 const opts = yLabel => ({
     responsive: true, maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
-    plugins: { legend: { display: false }, tooltip: { backgroundColor: "#1a2436", borderColor: "#1e3050", borderWidth: 1, titleColor: "#f0f6ff", bodyColor: "#7a90ae", padding: 10 } },
+    plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: "#1a2436", borderColor: "#1e3050", borderWidth: 1, titleColor: "#f0f6ff", bodyColor: "#7a90ae", padding: 10 },
+    },
     scales: { x: xAxis(), y: { grid: { color: "#1e3050" }, ticks: { maxTicksLimit: 5 }, title: { display: !!yLabel, text: yLabel, color: "#4a607a", font: { size: 10 } } } },
 });
 const withLeg = o => ({ ...o, plugins: { ...o.plugins, legend: { display: true, labels: { color: "#7a90ae", boxWidth: 12, padding: 12 } } } });
@@ -444,6 +598,13 @@ const withLeg = o => ({ ...o, plugins: { ...o.plugins, legend: { display: true, 
 function renderCharts(rows) {
     if (!rows || !rows.length) return;
     const pts = rows.map(r => r.obs_time_utc);
+
+    // Update Slider Ranges
+    const startEl = $("slider-start-time");
+    const endEl = $("slider-end-time");
+    if (startEl && pts.length) startEl.textContent = new Date(pts[0]).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    if (endEl && pts.length) endEl.textContent = new Date(pts[pts.length - 1]).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
     const tLabel = useCelsius ? "°C" : "°F";
     const tempData = useCelsius ? rows.map(r => toC(r.temp_f)) : rows.map(r => r.temp_f);
     const dpData = useCelsius ? rows.map(r => toC(r.dew_point_f)) : rows.map(r => r.dew_point_f);
@@ -466,7 +627,7 @@ function renderDailyTable(days) {
     tbody.innerHTML = "";
     days.forEach(d => {
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${d.day}</td><td>${tempStr(d.temp_high_f)}</td><td>${tempStr(d.temp_low_f)}</td><td>${tempStr(d.temp_avg_f)}</td><td>${fmt(d.humidity_high, 0)}%</td><td>${fmt(d.humidity_low, 0)}%</td><td>${fmt(d.pressure_avg, 2)}</td><td>${fmt(d.wind_gust_max, 1)}</td><td>${fmt(d.rain_total, 2)}"</td><td>${fmt(d.uv_max, 0)}</td><td>${d.reading_count}</td>`;
+        tr.innerHTML = `<td>${d.day || "—"}</td><td>${tempStr(d.temp_high_f)}</td><td>${tempStr(d.temp_low_f)}</td><td>${tempStr(d.temp_avg_f)}</td><td>${fmt(d.humidity_high, 0)}%</td><td>${fmt(d.humidity_low, 0)}%</td><td>${fmt(d.pressure_avg, 2)}</td><td>${fmt(d.wind_gust_max, 1)}</td><td>${fmt(d.rain_total, 2)}"</td><td>${fmt(d.uv_max, 0)}</td><td>${d.reading_count || "—"}</td>`;
         tbody.appendChild(tr);
     });
 }
@@ -475,20 +636,29 @@ function renderDailyTable(days) {
 async function fetchAll() {
     try {
         const s = currentStation;
-        let [current, history, daily, alerts, nearby] = await Promise.all([
-            fetch(`/api/current?station=${s}`).then(r => r.json()).catch(() => null),
-            fetch(historyUrl()).then(r => r.json()).catch(() => []),
-            fetch(`/api/daily?station=${s}&days=30`).then(r => r.json()).catch(() => []),
-            fetch(`/api/alerts?station=${s}`).then(r => r.json()).catch(() => []),
-            fetch(`/api/nearby?station=${s}`).then(r => r.json()).catch(() => []),
+        const [currRes, histRes, nearbyRes, alertsRes, forecastRes, dailyRes] = await Promise.all([
+            fetch(`/api/current?station=${s}`),
+            fetch(historyUrl()),
+            fetch(`/api/nearby?station=${s}`),
+            fetch(`/api/alerts?station=${s}`),
+            fetch(`/api/forecast?station=${s}`),
+            fetch(`/api/daily?station=${s}`)
         ]);
 
-        if (customStart && customEnd && history && history.length > 0) {
-            // For custom historical ranges, override the "current" live conditions
-            // with the final observation of the selected timeframe.
-            current = history[history.length - 1];
+        const current = await currRes.json();
+        const history = await histRes.json();
+        const nearby = await nearbyRes.json();
+        const alerts = await alertsRes.json();
+        const forecast = await forecastRes.json();
+        const daily = await dailyRes.json();
 
-            const liveBadge = document.querySelector(".live-badge");
+        let heroData = current;
+        const params = new URLSearchParams(historyUrl().split("?")[1]);
+        const timeframe = params.get("range") || "1h";
+
+        const liveBadge = document.querySelector(".live-badge");
+        if (timeframe !== "live" && history && history.length > 0) {
+            heroData = history[history.length - 1];
             if (liveBadge) {
                 liveBadge.innerHTML = '<span class="live-dot" style="background:#eab308;animation:none;"></span> HISTORICAL';
                 liveBadge.style.color = "#eab308";
@@ -496,7 +666,6 @@ async function fetchAll() {
                 liveBadge.style.background = "rgba(234,179,8,0.1)";
             }
         } else {
-            const liveBadge = document.querySelector(".live-badge");
             if (liveBadge) {
                 liveBadge.innerHTML = '<span class="live-dot"></span> LIVE';
                 liveBadge.style.color = "var(--green)";
@@ -505,16 +674,205 @@ async function fetchAll() {
             }
         }
 
-        updateHero(current);
+        if (!heroData || Object.keys(heroData).length === 0) {
+            if ($("no-data-state")) $("no-data-state").style.display = "flex";
+            if ($("dashboard-state")) $("dashboard-state").style.display = "none";
+            return;
+        }
+
+        if ($("no-data-state")) $("no-data-state").style.display = "none";
+        if ($("dashboard-state")) $("dashboard-state").style.display = "block";
+
+        try {
+            stationList = await fetch("/api/stations").then(r => r.json());
+        } catch (e) {
+            console.warn("Map metadata fetch failed", e);
+        }
+
+        updateHero(heroData);
+        updateDynamicTheme(heroData);
         updateSummary(history);
-        updateMetrics(current, history);
+        updateMetrics(heroData, history);
         renderCharts(history);
         renderDailyTable(daily);
         renderAlerts(alerts);
-        renderNearby(nearby);
+        renderNearby(nearby.stations || []);
+        renderForecast(forecast);
+
+        setText("last-update-time", new Date().toLocaleTimeString());
     } catch (e) {
         console.warn("Fetch error:", e);
     }
+}
+
+async function initAuth() {
+    const token = localStorage.getItem("wx_token");
+    const userDisplay = $("user-display");
+    const loginLink = $("login-link");
+    const signupLink = $("signup-link");
+    const logoutBtn = $("logout-btn");
+    const manageBtn = $("manage-stations-btn");
+
+    if (!token) {
+        if (userDisplay) userDisplay.textContent = "Guest";
+        if (loginLink) loginLink.style.display = "inline";
+        if (signupLink) signupLink.style.display = "inline";
+        if (logoutBtn) logoutBtn.style.display = "none";
+        if (manageBtn) manageBtn.style.display = "none";
+        return;
+    }
+
+    try {
+        const res = await fetch("/api/auth/me", {
+            headers: { "Authorization": `Bearer ${token}` }
+        });
+        if (res.ok) {
+            currentUser = await res.json();
+            if (userDisplay) userDisplay.textContent = currentUser.username;
+            if (loginLink) loginLink.style.display = "none";
+            if (signupLink) signupLink.style.display = "none";
+            if (logoutBtn) logoutBtn.style.display = "inline";
+            if (currentUser.is_admin && manageBtn) {
+                manageBtn.style.display = "inline-block";
+            }
+        } else {
+            localStorage.removeItem("wx_token");
+            initAuth();
+        }
+    } catch (e) { console.error("Auth error:", e); }
+
+    if (logoutBtn) logoutBtn.onclick = () => {
+        localStorage.removeItem("wx_token");
+        window.location.reload();
+    };
+}
+
+function initStationManagement() {
+    const modal = $("station-modal");
+    const btn = $("manage-stations-btn");
+    const close = $("close-station-modal");
+
+    if (btn) btn.addEventListener("click", () => {
+        if (modal) modal.style.display = "flex";
+        renderStationList();
+    });
+    if (close) close.addEventListener("click", () => { if (modal) modal.style.display = "none"; });
+
+    const addForm = $("add-station-form");
+    if (addForm) addForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const payload = {
+            id: $("new-station-id").value.trim(),
+            name: $("new-station-name").value.trim() || null
+        };
+
+        const res = await fetch("/api/stations", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${localStorage.getItem("wx_token")}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (res.ok) {
+            addForm.reset();
+            renderStationList();
+            initStationTabs();
+        } else {
+            alert("Failed to add station");
+        }
+    };
+}
+
+async function renderStationList() {
+    const container = $("station-list-container");
+    if (!container) return;
+    const res = await fetch("/api/stations");
+    const stations = await res.json();
+    container.innerHTML = "";
+
+    stations.forEach(s => {
+        const item = document.createElement("div");
+        item.className = "station-item";
+        item.innerHTML = `
+            <div><strong>${s.name}</strong> (${s.id})</div>
+            <button class="btn-delete" data-id="${s.id}">Delete</button>
+        `;
+        item.querySelector(".btn-delete").onclick = async () => {
+            if (!confirm(`Delete ${s.name}?`)) return;
+            const res = await fetch(`/api/stations/${s.id}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${localStorage.getItem("wx_token")}` }
+            });
+            if (res.ok) {
+                renderStationList();
+                initStationTabs();
+            }
+        };
+        container.appendChild(item);
+    });
+}
+
+function getWeatherInsight(p) {
+    const temp = p.temperature;
+    const short = p.shortForecast.toLowerCase();
+    const isDay = p.isDaytime;
+    const rainProb = p.probabilityOfPrecipitation?.value || 0;
+    const wind = parseInt(p.windSpeed) || 0;
+
+    if (rainProb > 40) return "☂️ Carry an umbrella";
+    if (temp > 85) return "☀️ Stay hydrated";
+    if (temp < 40) return "🧣 Wear a warm coat";
+    if (wind > 20) return "🌬️ High wind alert";
+    if (short.includes("sunny") || short.includes("clear")) {
+        return isDay ? "🕶️ Great for a walk" : "✨ Clear skies tonight";
+    }
+    if (short.includes("cloudy")) return "☁️ Overcast vibes";
+    return "✅ Looking good";
+}
+
+function renderForecast(periods) {
+    const container = $("forecast-grid");
+    if (!container) return;
+    container.innerHTML = "";
+    if (!periods || !Array.isArray(periods)) {
+        container.innerHTML = '<div style="color:var(--text-muted); padding:1rem;">No forecast available.</div>';
+        return;
+    }
+
+    periods.forEach((p, i) => {
+        const card = document.createElement("div");
+        card.className = "forecast-card";
+        card.style.animationDelay = `${i * 0.05}s`;
+
+        const rainProb = p.probabilityOfPrecipitation?.value || 0;
+        const wind = p.windSpeed || "—";
+        const insight = getWeatherInsight(p);
+
+        card.innerHTML = `
+            <div class="fc-name">${p.name}</div>
+            <div class="fc-icon">
+                <img src="${p.icon}" style="width:56px; height:56px; border-radius:12px;" alt="${p.shortForecast}">
+            </div>
+            <div class="fc-temp">${p.temperature}°${p.temperatureUnit}</div>
+            <div class="fc-short" style="margin-bottom:0.5rem; font-weight:500;">${p.shortForecast}</div>
+            
+            <div class="fc-details">
+                <div class="fc-detail-row">
+                    <span>Rain</span>
+                    <span>${rainProb}%</span>
+                </div>
+                <div class="fc-detail-row">
+                    <span>Wind</span>
+                    <span>${wind}</span>
+                </div>
+            </div>
+            
+            <div class="fc-insight">${insight}</div>
+        `;
+        container.appendChild(card);
+    });
 }
 
 // ── Event wiring ─────────────────────────────────────────────────────────────
