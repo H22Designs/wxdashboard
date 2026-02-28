@@ -14,10 +14,27 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script
         src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+
+    <!-- Leaflet Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
     <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 
 <body>
+    <div class="auth-bar">
+        <div class="auth-box" id="auth-box">
+            <span id="user-display">Guest</span>
+            <div class="auth-links">
+                <a href="/login" id="login-link">Login</a>
+                <a href="/signup" id="signup-link">Sign Up</a>
+                <button id="logout-btn" style="display:none">Logout</button>
+            </div>
+        </div>
+    </div>
 
     <!-- ═══ HEADER ═══════════════════════════════════════════════════════════════ -->
     <header class="wx-header">
@@ -25,6 +42,8 @@
             <a href="/" class="wx-logo">
                 <div class="wx-logo-icon">🌦️</div>
                 <span id="header-station-name">Weather Dashboard</span>
+                <span id="header-station-id"
+                    style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem; font-weight: 400; opacity: 0.8;"></span>
             </a>
             <div style="display:flex; align-items:center; gap:.75rem; flex-wrap:wrap;">
                 <!-- Station Selector Tabs -->
@@ -39,9 +58,41 @@
                     <span id="last-update-time">—</span>
                 </span>
                 <button class="settings-toggle" id="settings-toggle" title="Customize Dashboard">⚙️</button>
+                <button id="manage-stations-btn" class="tf-btn"
+                    style="display:none; margin-left:.5rem; height:36px; padding:0 1rem; font-size:.85rem;">Manage
+                    Stations</button>
             </div>
         </div>
     </header>
+
+    <!-- ═══ MANAGE STATIONS MODAL ════════════════════════════════════════════════ -->
+    <div id="station-modal" class="modal-overlay" style="display:none;">
+        <div class="modal-content glass">
+            <div class="modal-header">
+                <h3>🛰️ Manage Weather Stations</h3>
+                <button id="close-station-modal" class="modal-close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="station-list-container">
+                    <!-- Dynamic station list with delete buttons -->
+                </div>
+                <hr style="border:0; border-top:1px solid rgba(255,255,255,0.1); margin:1.5rem 0;">
+                <h4>Add New Station</h4>
+                <form id="add-station-form">
+                    <div class="form-row">
+                        <input type="text" id="new-station-id" placeholder="Station ID (e.g. KALMILLP10)" required>
+                    </div>
+                    <div class="form-row">
+                        <input type="text" id="new-station-name" placeholder="Optional Nickname (e.g. My Backyard)">
+                    </div>
+                    <p style="font-size:.7rem; color:var(--text-dim); margin-top:.5rem;">
+                        📍 Location data and official name will be fetched automatically from Weather Underground.
+                    </p>
+                    <button type="submit" class="btn-primary" style="margin-top:1rem; width:100%;">Add Station</button>
+                </form>
+            </div>
+        </div>
+    </div>
 
     <!-- ═══ SETTINGS PANEL ════════════════════════════════════════════════════════ -->
     <div class="settings-panel" id="settings-panel" style="display:none;">
@@ -160,6 +211,19 @@
                             <span>Humidity</span>
                             <strong id="humidity-val">—</strong>
                         </div>
+                        <hr style="border:0; border-top:1px solid rgba(255,255,255,0.05); margin:0.5rem 0;">
+                        <div class="temp-meta-row" style="font-size:0.75rem; opacity:0.8;">
+                            <span>Station ID</span>
+                            <span id="hero-station-id">—</span>
+                        </div>
+                        <div class="temp-meta-row" style="font-size:0.75rem; opacity:0.8;">
+                            <span>Location</span>
+                            <span id="hero-station-loc">—</span>
+                        </div>
+                        <div class="temp-meta-row" style="font-size:0.75rem; opacity:0.8;">
+                            <span>Updated</span>
+                            <span id="hero-last-update">—</span>
+                        </div>
                     </div>
                 </div>
 
@@ -207,6 +271,44 @@
                 </div>
 
             </div>
+
+            <!-- ── Map Row ──────────────────────────────────────────────────── -->
+            <div class="hero-row" id="map-station-row">
+                <div class="metric-card" style="padding:0; overflow:hidden; min-height:400px; display:flex;">
+                    <div id="station-map" style="width:100%; height:400px; z-index:1;"></div>
+                </div>
+                <div class="metric-card" data-card-id="station-meta">
+                    <div class="metric-header">
+                        <span class="metric-label">Station Info</span>
+                        <span class="metric-icon">📡</span>
+                    </div>
+                    <div id="station-id-display"
+                        style="font-size:1.4rem; font-weight:700; color:var(--accent); letter-spacing:.02em;">
+                        —
+                    </div>
+                    <div class="metric-sub">
+                        <div class="metric-sub-row"><span>Source</span><span>Weather Underground</span></div>
+                        <div class="metric-sub-row"><span>Poll Interval</span><span>30 seconds</span></div>
+                        <div class="metric-sub-row"><span>Readings</span><span id="station-readings">—</span></div>
+                        <div class="metric-sub-row"><span>Location</span><span id="station-coords">—</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── Forecast Row ─────────────────────────────────────────────── -->
+            <section class="forecast-section" id="forecast-section">
+                <div class="metric-card wide-card">
+                    <div class="metric-header">
+                        <span class="metric-label">📅 7-Day Forecast</span>
+                        <span class="metric-icon">🗓️</span>
+                    </div>
+                    <div class="forecast-scroll-container">
+                        <div class="forecast-grid" id="forecast-grid">
+                            <!-- Dynamic forecast cards -->
+                        </div>
+                    </div>
+                </div>
+            </section>
 
             <!-- ── Metrics Grid ──────────────────────────────────────────────── -->
             <div class="metrics-grid">
@@ -366,22 +468,6 @@
                     </div>
                 </div>
 
-                <!-- Station Info -->
-                <div class="metric-card" data-card-id="station">
-                    <div class="metric-header">
-                        <span class="metric-label">Station Info</span>
-                        <span class="metric-icon">📡</span>
-                    </div>
-                    <div id="station-id-display"
-                        style="font-size:1.4rem; font-weight:700; color:var(--accent); letter-spacing:.02em;">
-                        —
-                    </div>
-                    <div class="metric-sub">
-                        <div class="metric-sub-row"><span>Source</span><span>Weather Underground</span></div>
-                        <div class="metric-sub-row"><span>Poll Interval</span><span>30 seconds</span></div>
-                        <div class="metric-sub-row"><span>Readings</span><span id="station-readings">—</span></div>
-                    </div>
-                </div>
 
             </div>
 
@@ -403,6 +489,21 @@
                             <input type="datetime-local" id="chart-end" class="time-picker">
                             <button class="tf-btn" id="apply-custom-range">Apply</button>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Master Timeline Slider -->
+                <div class="timeline-slider-container">
+                    <div class="timeline-header">
+                        <span class="timeline-title">🕒 Master Timeline Scanner</span>
+                        <button id="reset-charts-zoom" class="reset-btn">Reset All Charts</button>
+                    </div>
+                    <input type="range" id="charts-timeline-slider" min="0" max="100" value="100"
+                        class="timeline-slider">
+                    <div class="timeline-footer">
+                        <span id="slider-start-time">Earlier</span>
+                        <span id="slider-current-view" style="color:var(--accent); font-weight:600;">Full Range</span>
+                        <span id="slider-end-time">Latest</span>
                     </div>
                 </div>
 
@@ -482,6 +583,7 @@
             Data sourced from <strong>Weather Underground</strong> &nbsp;·&nbsp; Auto-refreshes
         </div>
     </footer>
+
 
     <script src="/static/js/wu_dashboard.js"></script>
 </body>
